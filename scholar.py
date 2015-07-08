@@ -210,11 +210,12 @@ class ScholarConf(object):
     VERSION = '2.9'
     LOG_LEVEL = 1
     MAX_PAGE_RESULTS = 20 # Current maximum for per-page results
-    SCHOLAR_SITE = 'http://scholar.google.com'
+    SCHOLAR_SITE = 'https://scholar.google.com'
 
     # USER_AGENT = 'Mozilla/5.0 (X11; U; FreeBSD i386; en-US; rv:1.9.2.9) Gecko/20100913 Firefox/3.6.9'
     # Let's update at this point (3/14):
     USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:27.0) Gecko/20100101 Firefox/27.0'
+    REFERER = None
 
     # If set, we will use this file to read/save cookies to enable
     # cookie use across sessions.
@@ -449,6 +450,12 @@ class ScholarArticleParser(object):
                         self._as_int(tag.string.split()[1])
                 self.article['url_versions'] = \
                     self._strip_url_arg('num', self._path2url(tag.get('href')))
+
+                if self.article['cluster_id'] is None:
+                    args = self.article['url_versions'].split('?', 1)[1]
+                    for arg in args.split('&'):
+                        if arg.startswith('cluster='):
+                            self.article['cluster_id'] = arg[8:]
 
             if tag.getText().startswith('Import'):
                 self.article['url_citation'] = self._path2url(tag.get('href'))
@@ -732,11 +739,16 @@ class SearchScholarQuery(ScholarQuery):
         self.words_none = None # None of these words
         self.phrase = None
         self.scope_title = False # If True, search in title only
-        self.author = None 
+        self.author = None
         self.pub = None
         self.timeframe = [None, None]
         self.include_patents = True
         self.include_citations = True
+        self.cites = None
+
+    def set_cites(self, cites):
+        """Sets id of cluster that must be cited in results."""
+        self.cites = cites
 
     def set_words(self, words):
         """Sets words that *all* must be found in the result."""
@@ -790,7 +802,8 @@ class SearchScholarQuery(ScholarQuery):
         if self.words is None and self.words_some is None \
            and self.words_none is None and self.phrase is None \
            and self.author is None and self.pub is None \
-           and self.timeframe[0] is None and self.timeframe[1] is None:
+           and self.timeframe[0] is None and self.timeframe[1] is None \
+           and self.cites is None:
             raise QueryArgumentError('search query needs more parameters')
 
         # If we have some-words or none-words lists, we need to
@@ -822,7 +835,10 @@ class SearchScholarQuery(ScholarQuery):
         for key, val in urlargs.items():
             urlargs[key] = quote(encode(val))
 
-        return self.SCHOLAR_QUERY_URL % urlargs
+        if self.cites is None:
+            return self.SCHOLAR_QUERY_URL % urlargs
+        else:
+            return (self.SCHOLAR_QUERY_URL % urlargs) + "&cites=%s&scipsc=1" % self.cites
 
 
 class ScholarSettings(object):
@@ -984,9 +1000,10 @@ class ScholarQuerier(object):
                                        log_msg='dump of query response HTML',
                                        err_msg='results retrieval failed')
         if html is None:
-            return
+            return False
 
         self.parse(html)
+        return True
 
     def get_citation_data(self, article):
         """
@@ -1050,8 +1067,10 @@ class ScholarQuerier(object):
             err_msg = 'request failed'
         try:
             ScholarUtils.log('info', 'requesting %s' % unquote(url))
-
-            req = Request(url=url, headers={'User-Agent': ScholarConf.USER_AGENT})
+            headers = {'User-Agent': ScholarConf.USER_AGENT}
+            if ScholarConf.REFERER:
+                headers['Referer'] = ScholarConf.REFERER
+            req = Request(url=url, headers=headers)
             hdl = self.opener.open(req)
             html = hdl.read()
 
@@ -1129,6 +1148,8 @@ scholar.py -c 5 -a "albert einstein" -t --none "quantum theory" --after 1970"""
                                  'These options define search query arguments and parameters.')
     group.add_option('-a', '--author', metavar='AUTHORS', default=None,
                      help='Author name(s)')
+    group.add_option('--cites', metavar='CITES', default=None,
+                     help='Citation id')
     group.add_option('-A', '--all', metavar='WORDS', default=None, dest='allw',
                      help='Results must contain all of these words')
     group.add_option('-s', '--some', metavar='WORDS', default=None,
@@ -1185,9 +1206,10 @@ scholar.py -c 5 -a "albert einstein" -t --none "quantum theory" --after 1970"""
         parser.print_help()
         return 1
 
+    ScholarConf.LOG_LEVEL = ScholarUtils.LOG_LEVELS['info'] #options.debug
     if options.debug > 0:
         options.debug = min(options.debug, ScholarUtils.LOG_LEVELS['debug'])
-        ScholarConf.LOG_LEVEL = options.debug
+        ScholarConf.LOG_LEVEL = ScholarUtils.LOG_LEVELS['info'] #options.debug
         ScholarUtils.log('info', 'using log level %d' % ScholarConf.LOG_LEVEL)
 
     if options.version:
@@ -1229,6 +1251,8 @@ scholar.py -c 5 -a "albert einstein" -t --none "quantum theory" --after 1970"""
         query = SearchScholarQuery()
         if options.author:
             query.set_author(options.author)
+        if options.cites:
+            query.set_cites(options.cites)
         if options.allw:
             query.set_words(options.allw)
         if options.some:
