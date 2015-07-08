@@ -1002,6 +1002,9 @@ class ScholarQuerier(object):
         if html is None:
             return False
 
+        if html.find("Sorry, we can't verify that you're not a robot when JavaScript is turned off") > 0:
+            raise Exception("Blocked")
+
         self.parse(html)
         return True
 
